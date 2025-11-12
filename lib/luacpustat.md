@@ -9,6 +9,32 @@ This Lunatik module provides access to Linux kernel CPU statistics, allowing Lua
 - Monitor user time, system time, idle time, I/O wait, IRQ handling, and more
 - Compatible with kernel monitoring and performance analysis tools
 
+## Constants
+
+### `cpustat.stat`
+
+Table of CPU time stat type constants that correspond to the kernel's `enum cpu_usage_stat`. These can be useful for accessing raw kernel data structures or understanding the stat indices.
+
+**Available constants:**
+- `cpustat.stat.USER`: User mode time (CPUTIME_USER)
+- `cpustat.stat.NICE`: Nice user mode time (CPUTIME_NICE)
+- `cpustat.stat.SYSTEM`: System/kernel mode time (CPUTIME_SYSTEM)
+- `cpustat.stat.SOFTIRQ`: Software interrupt time (CPUTIME_SOFTIRQ)
+- `cpustat.stat.IRQ`: Hardware interrupt time (CPUTIME_IRQ)
+- `cpustat.stat.IDLE`: Idle time (CPUTIME_IDLE)
+- `cpustat.stat.IOWAIT`: I/O wait time (CPUTIME_IOWAIT)
+- `cpustat.stat.STEAL`: Steal time in virtualized environment (CPUTIME_STEAL)
+- `cpustat.stat.GUEST`: Guest VM time (CPUTIME_GUEST)
+- `cpustat.stat.GUEST_NICE`: Nice guest VM time (CPUTIME_GUEST_NICE)
+- `cpustat.stat.FORCEIDLE`: Force idle time (CPUTIME_FORCEIDLE, available with CONFIG_SCHED_CORE)
+
+**Example:**
+```lua
+local cpustat = require("cpustat")
+print("USER stat index:", cpustat.stat.USER)
+print("IDLE stat index:", cpustat.stat.IDLE)
+```
+
 ## Functions
 
 ### `cpustat.get([cpu])`

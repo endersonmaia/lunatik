@@ -15,6 +15,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/kernel_stat.h>
+#include <linux/string.h>
 
 #include <lua.h>
 #include <lualib.h>
@@ -22,14 +23,39 @@
 
 #include <lunatik.h>
 
+static const lunatik_reg_t cpu_usage_stat[] = {
+	{"USER", CPUTIME_USER},
+	{"NICE", CPUTIME_NICE},
+	{"SYSTEM", CPUTIME_SYSTEM},
+	{"SOFTIRQ", CPUTIME_SOFTIRQ},
+	{"IRQ", CPUTIME_IRQ},
+	{"IDLE", CPUTIME_IDLE},
+	{"IOWAIT", CPUTIME_IOWAIT},
+	{"STEAL", CPUTIME_STEAL},
+	{"GUEST", CPUTIME_GUEST},
+	{"GUEST_NICE", CPUTIME_GUEST_NICE},
+#ifdef CONFIG_SCHED_CORE
+	{"FORCEIDLE", CPUTIME_FORCEIDLE},
+#endif
+	{NULL, 0}
+};
+
+typedef struct luacpustat_s {
+	struct kernel_cpustat *cpustat;
+	lunatik_object_t *runtime;
+} luacpustat_t;
+
+static int luacpustat_get(lua_State *L);
+static int luacpustat_count(lua_State *L);
+
 /***
 * Retrieves CPU statistics for a specific CPU or all CPUs.
 * Returns a table containing various CPU time counters in clock ticks.
-* Each field represents the accumulated time (in USER_HZ or clock ticks) 
+* Each field represents the accumulated time (in USER_HZ or clock ticks)
 * the CPU has spent in different states.
-* 
+*
 * @function get
-* @tparam[opt] integer cpu The CPU number to query (0-based). If omitted or -1, 
+* @tparam[opt] integer cpu The CPU number to query (0-based). If omitted or -1,
 *   returns statistics for all CPUs combined.
 * @treturn table A table with the following fields:
 *   @tfield integer user Time spent in user mode
@@ -44,12 +70,12 @@
 *   @tfield integer guest_nice Time spent running a niced guest
 * @usage
 * local cpustat = require("cpustat")
-* 
+*
 * -- Get statistics for CPU 0
 * local cpu0_stats = cpustat.get(0)
 * print("CPU 0 user time:", cpu0_stats.user)
 * print("CPU 0 idle time:", cpu0_stats.idle)
-* 
+*
 * -- Get combined statistics for all CPUs
 * local all_stats = cpustat.get()
 * print("Total system time:", all_stats.system)
@@ -58,10 +84,13 @@
 static int luacpustat_get(lua_State *L)
 {
 	int cpu = luaL_optinteger(L, 1, -1);
-	struct kernel_cpustat *kcpustat;
-	u64 user, nice, system, idle, iowait, irq, softirq, steal, guest, guest_nice;
-	int nrec = 10; /* number of fields */
-	int table;
+	u64 stats[NR_STATS];
+	struct kernel_cpustat kcs;
+	int i, table;
+	int stat_idx;
+
+	/* Initialize stats array */
+	memset(stats, 0, sizeof(stats));
 
 	if (cpu >= 0) {
 		/* Get stats for specific CPU */
@@ -69,70 +98,42 @@ static int luacpustat_get(lua_State *L)
 			return luaL_error(L, "invalid CPU number: %d (max: %d)", cpu, nr_cpu_ids - 1);
 		}
 
-		kcpustat = &kcpustat_cpu(cpu);
-		user = kcpustat->cpustat[CPUTIME_USER];
-		nice = kcpustat->cpustat[CPUTIME_NICE];
-		system = kcpustat->cpustat[CPUTIME_SYSTEM];
-		idle = kcpustat->cpustat[CPUTIME_IDLE];
-		iowait = kcpustat->cpustat[CPUTIME_IOWAIT];
-		irq = kcpustat->cpustat[CPUTIME_IRQ];
-		softirq = kcpustat->cpustat[CPUTIME_SOFTIRQ];
-		steal = kcpustat->cpustat[CPUTIME_STEAL];
-		guest = kcpustat->cpustat[CPUTIME_GUEST];
-		guest_nice = kcpustat->cpustat[CPUTIME_GUEST_NICE];
+		/* Copy the per-CPU structure */
+		kcs = kcpustat_cpu(cpu);
+		for (stat_idx = 0; cpu_usage_stat[stat_idx].name != NULL; stat_idx++) {
+			enum cpu_usage_stat cputime_idx = cpu_usage_stat[stat_idx].value;
+			stats[cputime_idx] = kcs.cpustat[cputime_idx];
+		}
 	} else {
 		/* Aggregate stats for all CPUs */
-		int i;
-		user = nice = system = idle = iowait = irq = softirq = steal = guest = guest_nice = 0;
-
 		for_each_possible_cpu(i) {
-			kcpustat = &kcpustat_cpu(i);
-			user += kcpustat->cpustat[CPUTIME_USER];
-			nice += kcpustat->cpustat[CPUTIME_NICE];
-			system += kcpustat->cpustat[CPUTIME_SYSTEM];
-			idle += kcpustat->cpustat[CPUTIME_IDLE];
-			iowait += kcpustat->cpustat[CPUTIME_IOWAIT];
-			irq += kcpustat->cpustat[CPUTIME_IRQ];
-			softirq += kcpustat->cpustat[CPUTIME_SOFTIRQ];
-			steal += kcpustat->cpustat[CPUTIME_STEAL];
-			guest += kcpustat->cpustat[CPUTIME_GUEST];
-			guest_nice += kcpustat->cpustat[CPUTIME_GUEST_NICE];
+			kcs = kcpustat_cpu(i);
+			for (stat_idx = 0; cpu_usage_stat[stat_idx].name != NULL; stat_idx++) {
+				enum cpu_usage_stat cputime_idx = cpu_usage_stat[stat_idx].value;
+				stats[cputime_idx] += kcs.cpustat[cputime_idx];
+			}
 		}
 	}
 
-	/* Create result table */
-	lua_createtable(L, 0, nrec);
+	/* Create result table and populate it using cpu_usage_stat array */
+	lua_createtable(L, 0, NR_STATS);
 	table = lua_gettop(L);
 
-	lua_pushinteger(L, (lua_Integer)user);
-	lua_setfield(L, table, "user");
+	for (stat_idx = 0; cpu_usage_stat[stat_idx].name != NULL; stat_idx++) {
+		const char *src = cpu_usage_stat[stat_idx].name;
+		char field_name[32];
+		char *dst = field_name;
 
-	lua_pushinteger(L, (lua_Integer)nice);
-	lua_setfield(L, table, "nice");
+		/* Convert constant name to lowercase field name */
+		while (*src && (dst - field_name) < sizeof(field_name) - 1) {
+			*dst++ = (*src >= 'A' && *src <= 'Z') ? (*src + 32) : *src;
+			src++;
+		}
+		*dst = '\0';
 
-	lua_pushinteger(L, (lua_Integer)system);
-	lua_setfield(L, table, "system");
-
-	lua_pushinteger(L, (lua_Integer)idle);
-	lua_setfield(L, table, "idle");
-
-	lua_pushinteger(L, (lua_Integer)iowait);
-	lua_setfield(L, table, "iowait");
-
-	lua_pushinteger(L, (lua_Integer)irq);
-	lua_setfield(L, table, "irq");
-
-	lua_pushinteger(L, (lua_Integer)softirq);
-	lua_setfield(L, table, "softirq");
-
-	lua_pushinteger(L, (lua_Integer)steal);
-	lua_setfield(L, table, "steal");
-
-	lua_pushinteger(L, (lua_Integer)guest);
-	lua_setfield(L, table, "guest");
-
-	lua_pushinteger(L, (lua_Integer)guest_nice);
-	lua_setfield(L, table, "guest_nice");
+		lua_pushinteger(L, (lua_Integer)stats[cpu_usage_stat[stat_idx].value]);
+		lua_setfield(L, table, field_name);
+	}
 
 	return 1; /* table */
 }
@@ -159,7 +160,12 @@ static const luaL_Reg luacpustat_lib[] = {
 	{NULL, NULL}
 };
 
-LUNATIK_NEWLIB(cpustat, luacpustat_lib, NULL, NULL);
+static const lunatik_namespace_t luacpustat_flags[] = {
+	{"stat", cpu_usage_stat},
+	{NULL, NULL}
+};
+
+LUNATIK_NEWLIB(cpustat, luacpustat_lib, NULL, luacpustat_flags);
 
 static int __init luacpustat_init(void)
 {
